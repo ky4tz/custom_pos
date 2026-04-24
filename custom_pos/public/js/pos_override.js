@@ -1,29 +1,23 @@
 frappe.provide('erpnext.PointOfSale');
 
-// This helps us know the file actually loaded!
 console.log("🚀 Custom POS Override Script Loaded!"); 
 
-// Trigger when navigating to the POS page
 $(document).on('page-change', function() {
     if (frappe.get_route()[0] === 'point-of-sale') {
         setup_custom_pos_logic();
     }
 });
 
-// Trigger if the user refreshes directly on the POS page
 if (frappe.get_route() && frappe.get_route()[0] === 'point-of-sale') {
     setTimeout(setup_custom_pos_logic, 1000);
 }
 
 function setup_custom_pos_logic() {
-    // Prevent the observer from running twice
     if (window.pos_custom_observer_active) return;
     window.pos_custom_observer_active = true;
 
     // 1. Inject the UI fields when Payment screen is open
     const observer = new MutationObserver((mutations) => {
-        
-        // Looks for multiple possible class names used by different ERPNext versions
         const payment_container = document.querySelector('.payment-modes') || document.querySelector('.payment-method-container'); 
         
         if (payment_container && !document.getElementById('custom-pos-fields')) {
@@ -43,14 +37,19 @@ function setup_custom_pos_logic() {
             `;
             payment_container.insertAdjacentHTML('afterend', custom_html);
         }
+    });
 
-        // Logic to show/hide based on clicked payment method
-        const active_method = document.querySelector('.mode-of-payment.is-selected');
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    // 2. NEW TOGGLE LOGIC: Listen for direct clicks on the payment methods!
+    $(document).on('click', '.mode-of-payment', function() {
         const custom_fields_div = document.getElementById('custom-pos-fields');
-        
-        if (active_method && custom_fields_div) {
-            const method_name = active_method.innerText.trim();
-            if (method_name !== 'Cash') {
+        if (custom_fields_div) {
+            // Check the hidden 'data-payment-type' (Bank vs Cash)
+            const payment_type = $(this).attr('data-payment-type');
+            
+            // If it is NOT cash, drop down the fields!
+            if (payment_type && payment_type !== 'Cash') {
                 custom_fields_div.style.display = 'block';
             } else {
                 custom_fields_div.style.display = 'none';
@@ -58,44 +57,39 @@ function setup_custom_pos_logic() {
         }
     });
 
-    observer.observe(document.body, { childList: true, subtree: true });
-
-    // 2. Intercept the "Complete Order" function to save the data & enforce mandatory rules
+    // 3. Intercept "Complete Order" to save and enforce rules
     setTimeout(() => {
         if (erpnext.PointOfSale && erpnext.PointOfSale.Controller) {
             const original_save = erpnext.PointOfSale.Controller.prototype.save_and_submit;
             
             erpnext.PointOfSale.Controller.prototype.save_and_submit = function() {
-                // Grab the values from our custom HTML inputs
                 const custom_name = $('#pos_custom_name').val();
                 const custom_digits = $('#pos_custom_digits').val();
                 const custom_ref = $('#pos_custom_ref').val();
 
-                // --- MANDATORY VALIDATION ---
-                const active_method = document.querySelector('.mode-of-payment.is-selected');
-                if (active_method && active_method.innerText.trim() !== 'Cash') {
-                    // If any of the 3 fields are empty, stop and show an error
+                // If the custom fields box is visible, we know it's a non-cash order!
+                const custom_fields_div = document.getElementById('custom-pos-fields');
+                const is_non_cash = custom_fields_div && custom_fields_div.style.display === 'block';
+
+                if (is_non_cash) {
                     if (!custom_name || !custom_digits || !custom_ref) {
                         frappe.msgprint({
                             title: __('Missing Information'),
                             indicator: 'red',
                             message: __('Please enter the Name, Last 4 Digits, and Reference No. before completing a non-cash order.')
                         });
-                        return; // This blocks the checkout!
+                        return; // Blocks the checkout!
                     }
                 }
-                // ----------------------------
 
-                // Inject them into your EXACT Frappe database fields
                 if (this.frm && this.frm.doc) {
                     this.frm.doc.custom_name_on_cardbank_account = custom_name;
                     this.frm.doc.custom_last_4_digits = custom_digits;
                     this.frm.doc.custom_reference_noapproval_code = custom_ref;
                 }
 
-                // Proceed with the standard checkout
                 return original_save.call(this);
             };
         }
-    }, 2000); // Wait 2 seconds for POS classes to fully load
+    }, 2000); 
 }
