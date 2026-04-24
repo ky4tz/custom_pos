@@ -1,6 +1,6 @@
 frappe.provide('erpnext.PointOfSale');
 
-console.log("🚀 Custom POS Script v5 (Bulletproof Payload Validation)"); 
+console.log("🚀 Custom POS Script v6 (Compact UI & Safe Unfreeze)"); 
 
 $(document).on('page-change', function() {
     if (frappe.get_route()[0] === 'point-of-sale') {
@@ -16,47 +16,41 @@ function setup_custom_pos_logic() {
     if (window.pos_custom_observer_active) return;
     window.pos_custom_observer_active = true;
 
-    // 1. Inject the UI perfectly below the payment modes list
-    const observer = new MutationObserver((mutations) => {
+    // 1. COMPACT UI INJECTION: Placed INSIDE the payment list, right below the buttons.
+    const observer = new MutationObserver(() => {
         const payment_modes_list = document.querySelector('.payment-modes'); 
         
         if (payment_modes_list && !document.getElementById('custom-pos-fields')) {
             const custom_html = `
-                <div id="custom-pos-fields" style="display:none; padding: 15px 0; margin-top: 15px; border-top: 1px solid var(--border-color);">
-                    <div class="text-muted" style="margin-bottom: 12px; font-weight: 600; font-size: 11px; letter-spacing: 0.5px; text-transform: uppercase;">
+                <div id="custom-pos-fields" style="display:none; padding: 12px; margin-top: 5px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--control-bg);">
+                    <div style="font-size: 10px; font-weight: 700; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">
                         Non-Cash Details
                     </div>
-                    
-                    <div class="control-input-wrapper" style="margin-bottom: 10px;">
-                        <label class="control-label" style="font-size: 12px;">Name on Card / Bank Account</label>
-                        <div class="control-input"><input type="text" id="pos_custom_name" class="input-with-feedback form-control input-xs"></div>
-                    </div>
-                    
-                    <div class="control-input-wrapper" style="margin-bottom: 10px;">
-                        <label class="control-label" style="font-size: 12px;">Last 4 Digits</label>
-                        <div class="control-input"><input type="text" id="pos_custom_digits" class="input-with-feedback form-control input-xs" maxlength="4"></div>
-                    </div>
-                    
-                    <div class="control-input-wrapper">
-                        <label class="control-label" style="font-size: 12px;">Reference No. / Approval Code</label>
-                        <div class="control-input"><input type="text" id="pos_custom_ref" class="input-with-feedback form-control input-xs"></div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                        <div style="grid-column: span 2;">
+                            <input type="text" id="pos_custom_name" class="form-control input-xs" placeholder="Name on Card / Bank Account" style="font-size: 12px; height: 28px;">
+                        </div>
+                        <div>
+                            <input type="text" id="pos_custom_digits" class="form-control input-xs" maxlength="4" placeholder="Last 4 Digits" style="font-size: 12px; height: 28px;">
+                        </div>
+                        <div>
+                            <input type="text" id="pos_custom_ref" class="form-control input-xs" placeholder="Ref No. / Approval" style="font-size: 12px; height: 28px;">
+                        </div>
                     </div>
                 </div>
             `;
-            payment_modes_list.insertAdjacentHTML('afterend', custom_html);
+            // 'beforeend' puts it inside the list box, right under the last payment method
+            payment_modes_list.insertAdjacentHTML('beforeend', custom_html);
         }
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
 
-    // 2. Simple Click Toggle (Listen for clicks directly on the wrappers)
+    // 2. TOGGLE VISIBILITY
     $(document).on('click', '.payment-mode-wrapper', function() {
         const custom_fields_div = document.getElementById('custom-pos-fields');
         if (custom_fields_div) {
-            // Get the exact name of the payment mode clicked
-            const modeName = $(this).find('.mode-of-payment').attr('data-mode');
-            
-            // If the mode is strictly "Cash", hide the boxes. Everything else shows them.
+            const modeName = $(this).find('.mode-of-payment').attr('data-mode') || $(this).text().trim();
             if (modeName === 'Cash') {
                 custom_fields_div.style.display = 'none';
             } else {
@@ -65,7 +59,7 @@ function setup_custom_pos_logic() {
         }
     });
 
-    // 3. The Payload Interceptor (100% Unbreakable Validation)
+    // 3. NETWORK VALIDATION & UNFREEZE FIX
     if (!window.pos_frappe_call_patched) {
         window.pos_frappe_call_patched = true;
         const original_frappe_call = frappe.call;
@@ -76,14 +70,11 @@ function setup_custom_pos_logic() {
                 let requires_custom_fields = false;
                 let doc_obj = null;
 
-                // Parse the exact data payload leaving the browser to the database
                 try {
                     if (options.args && options.args.doc) {
                         doc_obj = JSON.parse(options.args.doc);
                         if (doc_obj.payments) {
-                            // Loop through the payments applied to this order
                             doc_obj.payments.forEach(p => {
-                                // If any payment is NOT Cash AND has money applied to it:
                                 if (p.mode_of_payment !== 'Cash' && p.amount > 0) {
                                     requires_custom_fields = true;
                                 }
@@ -94,7 +85,6 @@ function setup_custom_pos_logic() {
                     console.error("Custom POS Parsing Error:", e);
                 }
                 
-                // If the payload contains a non-cash payment, Enforce the hard stop!
                 if (requires_custom_fields) {
                     const custom_name = $('#pos_custom_name').val();
                     const custom_digits = $('#pos_custom_digits').val();
@@ -106,10 +96,20 @@ function setup_custom_pos_logic() {
                             indicator: 'red',
                             message: __('Please enter the Name, Last 4 Digits, and Reference No. before completing a non-cash order.')
                         });
-                        return Promise.reject("Blocked by Custom POS Validation"); // Freezes checkout immediately
+
+                        // CRITICAL FIX: Manually unfreeze the checkout button so the user isn't stuck!
+                        setTimeout(() => {
+                            const btn = document.querySelector('.submit-order-btn');
+                            if (btn) {
+                                btn.style.pointerEvents = 'auto';
+                                btn.classList.remove('disabled');
+                            }
+                        }, 100);
+
+                        return Promise.reject("Blocked by Custom POS Validation"); 
                     }
                     
-                    // Inject the data directly into the database payload
+                    // Inject data to database payload
                     if (doc_obj) {
                         doc_obj.custom_name_on_cardbank_account = custom_name;
                         doc_obj.custom_last_4_digits = custom_digits;
@@ -118,7 +118,6 @@ function setup_custom_pos_logic() {
                     }
                 }
             }
-            // Let the network request proceed to the server
             return original_frappe_call.apply(this, arguments);
         };
     }
