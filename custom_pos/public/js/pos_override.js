@@ -1,6 +1,6 @@
 frappe.provide('erpnext.PointOfSale');
 
-console.log("🚀 Custom POS Override Script Loaded!"); 
+console.log("🚀 Custom POS Script v3 Loaded (Native Styling & Hard Validation)!"); 
 
 $(document).on('page-change', function() {
     if (frappe.get_route()[0] === 'point-of-sale') {
@@ -16,48 +16,62 @@ function setup_custom_pos_logic() {
     if (window.pos_custom_observer_active) return;
     window.pos_custom_observer_active = true;
 
-    // 1. Inject the UI fields when Payment screen is open
+    // 1. Inject the UI fields using NATIVE ERPNext styling
     const observer = new MutationObserver((mutations) => {
-        const payment_container = document.querySelector('.payment-modes') || document.querySelector('.payment-method-container'); 
+        // Target the entire left column
+        const payment_left_column = document.querySelector('.payment-container-left'); 
         
-        if (payment_container && !document.getElementById('custom-pos-fields')) {
-            console.log("✅ Found the payment area! Injecting fields now.");
+        if (payment_left_column && !document.getElementById('custom-pos-fields')) {
+            console.log("✅ Injecting Native-Styled Fields");
             
+            // Styled perfectly to match Frappe's native inputs, placed at the bottom of the column
             const custom_html = `
-                <div id="custom-pos-fields" style="display:none; padding: 15px; background: var(--control-bg, #2B2B2B); border-radius: 8px; margin-top: 15px;">
-                    <label style="font-size: 12px; color: var(--text-muted);">Name on Card / Bank Account</label>
-                    <input type="text" id="pos_custom_name" class="form-control" style="margin-bottom: 10px;">
+                <div id="custom-pos-fields" style="display:none; padding: 15px 0; border-top: 1px solid var(--border-color); margin-top: auto;">
+                    <div class="text-muted" style="margin-bottom: 12px; font-weight: 600; font-size: 11px; letter-spacing: 0.5px; text-transform: uppercase;">
+                        Non-Cash Details
+                    </div>
                     
-                    <label style="font-size: 12px; color: var(--text-muted);">Last 4 Digits</label>
-                    <input type="text" id="pos_custom_digits" class="form-control" style="margin-bottom: 10px;" maxlength="4">
+                    <div class="control-input-wrapper" style="margin-bottom: 10px;">
+                        <label class="control-label" style="font-size: 12px;">Name on Card / Bank Account</label>
+                        <div class="control-input"><input type="text" id="pos_custom_name" class="input-with-feedback form-control input-xs"></div>
+                    </div>
                     
-                    <label style="font-size: 12px; color: var(--text-muted);">Reference No. / Approval Code</label>
-                    <input type="text" id="pos_custom_ref" class="form-control">
+                    <div class="control-input-wrapper" style="margin-bottom: 10px;">
+                        <label class="control-label" style="font-size: 12px;">Last 4 Digits</label>
+                        <div class="control-input"><input type="text" id="pos_custom_digits" class="input-with-feedback form-control input-xs" maxlength="4"></div>
+                    </div>
+                    
+                    <div class="control-input-wrapper">
+                        <label class="control-label" style="font-size: 12px;">Reference No. / Approval Code</label>
+                        <div class="control-input"><input type="text" id="pos_custom_ref" class="input-with-feedback form-control input-xs"></div>
+                    </div>
                 </div>
             `;
-            payment_container.insertAdjacentHTML('afterend', custom_html);
+            // Appends to the bottom of the left section, under the scrollable modes
+            payment_left_column.insertAdjacentHTML('beforeend', custom_html);
         }
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
 
-    // 2. NEW TOGGLE LOGIC: Listen for direct clicks on the payment methods!
-    $(document).on('click', '.mode-of-payment', function() {
+    // 2. SHOW/HIDE LOGIC: "If it's not Cash, show it."
+    $(document).on('click', '.payment-mode-wrapper', function() {
         const custom_fields_div = document.getElementById('custom-pos-fields');
         if (custom_fields_div) {
-            // Check the hidden 'data-payment-type' (Bank vs Cash)
-            const payment_type = $(this).attr('data-payment-type');
+            // Get the name of the payment mode clicked
+            const modeDiv = $(this).find('.mode-of-payment');
+            let modeName = modeDiv.attr('data-mode') || $(this).text().trim();
             
-            // If it is NOT cash, drop down the fields!
-            if (payment_type && payment_type !== 'Cash') {
-                custom_fields_div.style.display = 'block';
-            } else {
+            // If the user clicked Cash, hide. For literally anything else (GCash, QRPh, Card), show it.
+            if (modeName === 'Cash') {
                 custom_fields_div.style.display = 'none';
+            } else {
+                custom_fields_div.style.display = 'block';
             }
         }
     });
 
-    // 3. Intercept "Complete Order" to save and enforce rules
+    // 3. HARD VALIDATION: Read the actual Frappe Data Payload
     setTimeout(() => {
         if (erpnext.PointOfSale && erpnext.PointOfSale.Controller) {
             const original_save = erpnext.PointOfSale.Controller.prototype.save_and_submit;
@@ -67,27 +81,40 @@ function setup_custom_pos_logic() {
                 const custom_digits = $('#pos_custom_digits').val();
                 const custom_ref = $('#pos_custom_ref').val();
 
-                // If the custom fields box is visible, we know it's a non-cash order!
-                const custom_fields_div = document.getElementById('custom-pos-fields');
-                const is_non_cash = custom_fields_div && custom_fields_div.style.display === 'block';
+                // --- DATA-LEVEL VALIDATION ---
+                // We check the exact payment data Frappe is about to send to the database
+                let requires_custom_fields = false;
+                
+                if (this.frm && this.frm.doc && this.frm.doc.payments) {
+                    this.frm.doc.payments.forEach(payment => {
+                        // If any payment line is NOT cash, and has money applied to it:
+                        if (payment.mode_of_payment !== 'Cash' && payment.amount > 0) {
+                            requires_custom_fields = true;
+                        }
+                    });
+                }
 
-                if (is_non_cash) {
+                // If a non-cash payment exists, enforce the hard stop
+                if (requires_custom_fields) {
                     if (!custom_name || !custom_digits || !custom_ref) {
                         frappe.msgprint({
                             title: __('Missing Information'),
                             indicator: 'red',
                             message: __('Please enter the Name, Last 4 Digits, and Reference No. before completing a non-cash order.')
                         });
-                        return; // Blocks the checkout!
+                        return; // BLOCKS THE CHECKOUT
                     }
                 }
+                // -----------------------------
 
+                // Inject data into the database fields
                 if (this.frm && this.frm.doc) {
                     this.frm.doc.custom_name_on_cardbank_account = custom_name;
                     this.frm.doc.custom_last_4_digits = custom_digits;
                     this.frm.doc.custom_reference_noapproval_code = custom_ref;
                 }
 
+                // Proceed with the standard checkout
                 return original_save.call(this);
             };
         }
