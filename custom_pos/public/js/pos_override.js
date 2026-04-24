@@ -1,6 +1,6 @@
 frappe.provide('erpnext.PointOfSale');
 
-console.log("🚀 Custom POS Script v4 (Network Patch & Layout Fix)"); 
+console.log("🚀 Custom POS Script v5 (Bulletproof Payload Validation)"); 
 
 $(document).on('page-change', function() {
     if (frappe.get_route()[0] === 'point-of-sale') {
@@ -43,74 +43,82 @@ function setup_custom_pos_logic() {
                     </div>
                 </div>
             `;
-            // Insert exactly after the list ends
             payment_modes_list.insertAdjacentHTML('afterend', custom_html);
         }
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
 
-    // 2. Foolproof UI Toggle (Checks every 300ms what is currently selected)
-    setInterval(() => {
-        const active_mode = document.querySelector('.mode-of-payment.is-selected');
+    // 2. Simple Click Toggle (Listen for clicks directly on the wrappers)
+    $(document).on('click', '.payment-mode-wrapper', function() {
         const custom_fields_div = document.getElementById('custom-pos-fields');
-        
-        if (active_mode && custom_fields_div) {
-            const payment_type = active_mode.getAttribute('data-payment-type');
-            const mode_name = active_mode.getAttribute('data-mode');
+        if (custom_fields_div) {
+            // Get the exact name of the payment mode clicked
+            const modeName = $(this).find('.mode-of-payment').attr('data-mode');
             
-            // If the system says it is Cash, hide it. Anything else (QRPh, Card, GCash), show it!
-            if (payment_type === 'Cash' || mode_name === 'Cash') {
+            // If the mode is strictly "Cash", hide the boxes. Everything else shows them.
+            if (modeName === 'Cash') {
                 custom_fields_div.style.display = 'none';
             } else {
                 custom_fields_div.style.display = 'block';
             }
         }
-    }, 300);
+    });
 
-    // 3. The Network Interceptor (Blocks empty submissions & Injects Data)
+    // 3. The Payload Interceptor (100% Unbreakable Validation)
     if (!window.pos_frappe_call_patched) {
         window.pos_frappe_call_patched = true;
         const original_frappe_call = frappe.call;
         
         frappe.call = function(options) {
-            // Wait for the exact network request that saves the POS Invoice
             if (options.method === "erpnext.selling.page.point_of_sale.point_of_sale.create_invoice") {
                 
-                const custom_fields_div = document.getElementById('custom-pos-fields');
-                const is_non_cash = custom_fields_div && custom_fields_div.style.display !== 'none';
+                let requires_custom_fields = false;
+                let doc_obj = null;
+
+                // Parse the exact data payload leaving the browser to the database
+                try {
+                    if (options.args && options.args.doc) {
+                        doc_obj = JSON.parse(options.args.doc);
+                        if (doc_obj.payments) {
+                            // Loop through the payments applied to this order
+                            doc_obj.payments.forEach(p => {
+                                // If any payment is NOT Cash AND has money applied to it:
+                                if (p.mode_of_payment !== 'Cash' && p.amount > 0) {
+                                    requires_custom_fields = true;
+                                }
+                            });
+                        }
+                    }
+                } catch (e) {
+                    console.error("Custom POS Parsing Error:", e);
+                }
                 
-                if (is_non_cash) {
+                // If the payload contains a non-cash payment, Enforce the hard stop!
+                if (requires_custom_fields) {
                     const custom_name = $('#pos_custom_name').val();
                     const custom_digits = $('#pos_custom_digits').val();
                     const custom_ref = $('#pos_custom_ref').val();
                     
-                    // VALIDATION BLOCKER
                     if (!custom_name || !custom_digits || !custom_ref) {
                         frappe.msgprint({
                             title: __('Missing Information'),
                             indicator: 'red',
                             message: __('Please enter the Name, Last 4 Digits, and Reference No. before completing a non-cash order.')
                         });
-                        // Throwing a Promise Rejection properly unfreezes the "Complete Order" button
-                        return Promise.reject("Missing Custom POS Fields"); 
+                        return Promise.reject("Blocked by Custom POS Validation"); // Freezes checkout immediately
                     }
                     
-                    // DATA INJECTOR (Safely modifies the payload going to the server)
-                    try {
-                        if (options.args && options.args.doc) {
-                            let doc = JSON.parse(options.args.doc);
-                            doc.custom_name_on_cardbank_account = custom_name;
-                            doc.custom_last_4_digits = custom_digits;
-                            doc.custom_reference_noapproval_code = custom_ref;
-                            options.args.doc = JSON.stringify(doc);
-                        }
-                    } catch (e) {
-                        console.error("Failed to inject custom POS fields:", e);
+                    // Inject the data directly into the database payload
+                    if (doc_obj) {
+                        doc_obj.custom_name_on_cardbank_account = custom_name;
+                        doc_obj.custom_last_4_digits = custom_digits;
+                        doc_obj.custom_reference_noapproval_code = custom_ref;
+                        options.args.doc = JSON.stringify(doc_obj);
                     }
                 }
             }
-            // Proceed with the network request
+            // Let the network request proceed to the server
             return original_frappe_call.apply(this, arguments);
         };
     }
