@@ -1,6 +1,6 @@
 frappe.provide('erpnext.PointOfSale');
 
-console.log("🚀 Custom POS Script v6 (Compact UI & Safe Unfreeze)"); 
+console.log("🚀 Custom POS Script v7 (Pre-Submit Blocker & Safe Injection)"); 
 
 $(document).on('page-change', function() {
     if (frappe.get_route()[0] === 'point-of-sale') {
@@ -16,7 +16,7 @@ function setup_custom_pos_logic() {
     if (window.pos_custom_observer_active) return;
     window.pos_custom_observer_active = true;
 
-    // 1. COMPACT UI INJECTION: Placed INSIDE the payment list, right below the buttons.
+    // 1. COMPACT UI INJECTION (Unchanged - Perfect Layout)
     const observer = new MutationObserver(() => {
         const payment_modes_list = document.querySelector('.payment-modes'); 
         
@@ -39,11 +39,9 @@ function setup_custom_pos_logic() {
                     </div>
                 </div>
             `;
-            // 'beforeend' puts it inside the list box, right under the last payment method
             payment_modes_list.insertAdjacentHTML('beforeend', custom_html);
         }
     });
-
     observer.observe(document.body, { childList: true, subtree: true });
 
     // 2. TOGGLE VISIBILITY
@@ -59,37 +57,20 @@ function setup_custom_pos_logic() {
         }
     });
 
-    // 3. NETWORK VALIDATION & UNFREEZE FIX
-    if (!window.pos_frappe_call_patched) {
-        window.pos_frappe_call_patched = true;
-        const original_frappe_call = frappe.call;
-        
-        frappe.call = function(options) {
-            if (options.method === "erpnext.selling.page.point_of_sale.point_of_sale.create_invoice") {
-                
-                let requires_custom_fields = false;
-                let doc_obj = null;
+    // 3. HARD UI BLOCKER: Intercepts BEFORE the "Confirm" popup or Network call
+    setTimeout(() => {
+        if (erpnext.PointOfSale && erpnext.PointOfSale.Controller) {
+            const original_save = erpnext.PointOfSale.Controller.prototype.save_and_submit;
+            
+            erpnext.PointOfSale.Controller.prototype.save_and_submit = function() {
+                const custom_fields_div = document.getElementById('custom-pos-fields');
 
-                try {
-                    if (options.args && options.args.doc) {
-                        doc_obj = JSON.parse(options.args.doc);
-                        if (doc_obj.payments) {
-                            doc_obj.payments.forEach(p => {
-                                if (p.mode_of_payment !== 'Cash' && p.amount > 0) {
-                                    requires_custom_fields = true;
-                                }
-                            });
-                        }
-                    }
-                } catch (e) {
-                    console.error("Custom POS Parsing Error:", e);
-                }
-                
-                if (requires_custom_fields) {
+                // If the fields are visible on the screen, enforce validation!
+                if (custom_fields_div && custom_fields_div.style.display !== 'none') {
                     const custom_name = $('#pos_custom_name').val();
                     const custom_digits = $('#pos_custom_digits').val();
                     const custom_ref = $('#pos_custom_ref').val();
-                    
+
                     if (!custom_name || !custom_digits || !custom_ref) {
                         frappe.msgprint({
                             title: __('Missing Information'),
@@ -97,24 +78,49 @@ function setup_custom_pos_logic() {
                             message: __('Please enter the Name, Last 4 Digits, and Reference No. before completing a non-cash order.')
                         });
 
-                        // CRITICAL FIX: Manually unfreeze the checkout button so the user isn't stuck!
-                        setTimeout(() => {
-                            const btn = document.querySelector('.submit-order-btn');
-                            if (btn) {
-                                btn.style.pointerEvents = 'auto';
-                                btn.classList.remove('disabled');
-                            }
-                        }, 100);
-
-                        return Promise.reject("Blocked by Custom POS Validation"); 
+                        // Unfreeze the button manually so they can try again
+                        const btn = document.querySelector('.submit-order-btn');
+                        if (btn) {
+                            btn.style.pointerEvents = 'auto';
+                            btn.classList.remove('disabled');
+                        }
+                        
+                        // RETURN EARLY: This stops the confirm popup from ever appearing!
+                        return; 
                     }
-                    
-                    // Inject data to database payload
-                    if (doc_obj) {
-                        doc_obj.custom_name_on_cardbank_account = custom_name;
-                        doc_obj.custom_last_4_digits = custom_digits;
-                        doc_obj.custom_reference_noapproval_code = custom_ref;
-                        options.args.doc = JSON.stringify(doc_obj);
+                }
+
+                // If fields are filled out, let Frappe's normal save continue
+                return original_save.call(this);
+            };
+        }
+    }, 2000);
+
+    // 4. DATA INJECTOR: Safely inserts your data into the database payload
+    if (!window.pos_frappe_call_patched) {
+        window.pos_frappe_call_patched = true;
+        const original_frappe_call = frappe.call;
+        
+        frappe.call = function(options) {
+            if (options.method && options.method.includes("create_invoice")) {
+                const custom_fields_div = document.getElementById('custom-pos-fields');
+                
+                // Only inject if the UI box was active
+                if (custom_fields_div && custom_fields_div.style.display !== 'none') {
+                    try {
+                        if (options.args && options.args.doc) {
+                            // Safely handle both String and Object payloads (Fixes the v6 bug!)
+                            let is_string = typeof options.args.doc === 'string';
+                            let doc_obj = is_string ? JSON.parse(options.args.doc) : options.args.doc;
+
+                            doc_obj.custom_name_on_cardbank_account = $('#pos_custom_name').val();
+                            doc_obj.custom_last_4_digits = $('#pos_custom_digits').val();
+                            doc_obj.custom_reference_noapproval_code = $('#pos_custom_ref').val();
+
+                            options.args.doc = is_string ? JSON.stringify(doc_obj) : doc_obj;
+                        }
+                    } catch (e) {
+                        console.error("Custom POS Payload Injection Error:", e);
                     }
                 }
             }
